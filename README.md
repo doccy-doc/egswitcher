@@ -50,9 +50,11 @@ A lightweight, defensive Bash utility for managing multiple Epic Games Launcher 
 ### See a List of Commands
     epic-switcher -h
 
+### Show Debug Messages
+    export EGS_DEBUG=1
+
 ## 🏗️ Roadmap
 - Transition to **Registry-driven detection** (`HKCU\Volatile Environment`).
-- Implement `debug` flag to assist with bug reports.
 - Transition to user-friendly CLI configuration.
 
 ## 🛡️ Dependencies
