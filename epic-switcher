@@ -23,9 +23,9 @@ VERSION="0.1.0"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 warn() { echo "WARNING: $*" >&2; }
-info() { echo "INFO: $*"; }
-success() { echo "SUCCESS: $*"; }
-debug() { [[ "${MYSCRIPT_DEBUG:-0}" = "1" ]] && echo "DEBUG: $*" >&2; }
+info() { echo "INFO: $*" >&2; }
+success() { echo "SUCCESS: $*" >&2; }
+debug() { [[ "${EGS_DEBUG:-0}" = "1" ]] && echo "DEBUG: $*" >&2 || true; }
 
 # =========================
 # DEPENDENCIES
@@ -53,11 +53,20 @@ EGS_PFX="${HOME}/Games/Lutris/epic-games-store" # <— EDIT THIS TO BE YOUR EPIC
 # ====================================== #
 # TODO: wine reg query to confirm prefix #
 require_prefix() {
+    : "${PREFIX_INITIALISED:=0}"
+
     if [[ -d "${EGS_PFX}/drive_c" ]]; then
         export WINEPREFIX="$EGS_PFX"
         export WINEDEBUG="-winediag"
+
+
+        if [[ $PREFIX_INITIALISED -eq 0 ]]; then
+            debug "Using WINEPREFIX: $WINEPREFIX"
+            PREFIX_INITIALISED=1
+        fi
+
     else
-        die "Wine prefix not found"
+        die "Wine prefix $EGS_PFX not found"
     fi
 }
 # ====================================== #
@@ -75,14 +84,16 @@ require_prefix
 
     # Query Wine for the actual username (respects WINEUSERNAME env)
     local wine_user
-    wine_user=$(wine whoami 2>/dev/null) || true
-    wine_user=$(printf '%s' "$wine_user" | tr -d '\r\n')
+    wine_user=$(wine whoami 2>/dev/null | awk -F "\\" '{print $NF}' | tr -d '\r\n[:space:]') || true
 
     # Validate it exists in prefix
     if [[ -n "$wine_user" && -d "$drive_c/$wine_user" ]]; then
         printf '%s' "$wine_user"
+        debug "Detected WINE whoami user: $wine_user"
         return 0
     fi
+
+    debug "WINE whoami failed. Attempting heuristic fallback"
 
     # Fallback: scan for first non-system directory
     for dir in "$drive_c"/*/; do
@@ -91,8 +102,11 @@ require_prefix
         basename=$(basename "$dir")
         [[ "$basename" == "Public" || "$basename" == "Default" ]] && continue
         printf '%s' "$basename"
+        debug "Heuristic match found. Using: $basename"
         return 0
     done
+
+    debug "Failed to find valid WINE user. Please check the prefix and try again"
 
     return 1
 }
@@ -235,6 +249,8 @@ save_account_files() {
     local name="$1"
     local store="${ACCOUNTS_DIR}/${name}"
 
+    debug "Syncing $name from $EGS_CONFIG_FILE to $store"
+
     mkdir -p "$store"
     [ -f "$EGS_CONFIG_FILE" ] || die "No $INI_FILE to save"
     rsync -a "$EGS_CONFIG_FILE" "$store/"
@@ -243,8 +259,10 @@ save_account_files() {
 load_account_files() {
     validate_accounts_file
     require_prefix
-    local name=$1
+    local name="$1"
     local store="${ACCOUNTS_DIR}/${name}"
+
+    debug "Syncing $name from $store to $EGS_CONFIG_FILE"
 
     mkdir -p "$EGS_CONFIG_DIR"
     rsync -a "${store}/${INI_FILE}" "$EGS_CONFIG_DIR/"
@@ -257,10 +275,12 @@ is_egs_running() {
 
     if  winedbg --command "info proc" 2>/dev/null |
         grep -qi 'EpicGamesLauncher\.exe'; then
-        info "Epic Games Launcher is running"
+        printf "\n"
+        debug "winedbg: Epic Games Launcher is running"
         return 0
     else
-        info "Epic Games Launcher is not running"
+        printf "\n"
+        debug "winedbg: Epic Games Launcher process not found"
         return 1
     fi
  }
@@ -271,40 +291,55 @@ kill_egs() {
     local delay=$((SHUTDOWN_TIMEOUT / tries))
 
     # Stage 0: nothing running
-    ! is_egs_running && return 0
+    ! is_egs_running && { debug "No Epic Games process found. Skipping kill_egs"; return 0; }
 
     # Stage 1: attempt graceful shutdown, then recheck
     info "Attempting to close Epic Games. Wait up to ${SHUTDOWN_TIMEOUT}s..."
     wine taskkill /im EpicGamesLauncher.exe /t /f &>/dev/null || true
 
+    printf "Trying" >&2
     for ((i= 1; i<=tries; i++)); do
         sleep "$delay"
-        info "Checking..."
-        ! is_egs_running && return 0
+        printf "." >&2
+        ! is_egs_running && success "Epic Games Closed" && return 0
     done
 
     # If we get here, it failed to shut down
     # Stage 2: kill wineserver
+    printf "\n" >&2
     warn "Epic Games Launcher did not exit after ${SHUTDOWN_TIMEOUT}s."
-    info "Force killing wineserver. Wait up to ${SHUTDOWN_TIMEOUT}..."
+    info "Force killing wineserver. Wait up to ${SHUTDOWN_TIMEOUT}s..."
     if ! timeout 5 wineserver -w &>/dev/null; then
+        debug "wineserver -w timeout reached; firing wineserver -k"
         wineserver -k &>/dev/null || true
     fi
 
+    printf "Trying" >&2
     for ((i=1; i<=tries; i++)); do
         sleep "$delay"
-        info "Checking..."
-        ! is_egs_running && return 0
+        printf "." >&2
+        ! is_egs_running && printf "\n" >&2 && success "Epic Games Closed" && return 0
     done
 
+    printf "\n" >&2
     die "Failed to terminate Epic Games Launcher. Aborted."
 }
 
 get_hkey_id() {
     require_prefix
+    local hkey hkey_masked
 
-    wine reg query "$EGS_REG_KEY" /v "$EGS_REG_VALUE" 2>/dev/null |
-        awk '/REG_SZ/ {print $NF}' | tr -d '\r'
+    hkey=$(wine reg query "$EGS_REG_KEY" /v "$EGS_REG_VALUE" 2>/dev/null |
+           awk '/REG_SZ/ {print $NF}' | tr -d '\r')
+
+    if [[ -n "$hkey" ]]; then
+        hkey_masked="${hkey:0:4}****${hkey: -4}"
+        debug "Registry $EGS_REG_VALUE: $hkey_masked"
+    else
+        debug "Could not retrieve hkey from WINE registry"
+    fi
+
+    printf '%s' "$hkey"
 }
 
 set_hkey_id() {
