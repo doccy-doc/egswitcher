@@ -6,8 +6,8 @@ A lightweight, defensive Bash utility for managing multiple Epic Games Launcher 
 
 * **Session Persistence:** Save and load full launcher states (authentication tokens, launcher settings).
 * **Defensive Design:** Automated checks for running processes to prevent data corruption.
-* **Wine Native Integration:** Uses `taskkill` and `wineserver -k` for session-safe termination.
-* **Smart Directory Detection:** Heuristic scanning to find the Wine user and AppData paths.
+* **WINE Native Integration:** Uses `taskkill` and `wineserver -k` for session-safe termination.
+* **Smart Directory Detection:** Uses WINE registry to find the WINE user and AppData paths, with heuristic directory scanning as a fallback.
 
 ## 🛠️ Installation
 
@@ -16,7 +16,7 @@ A lightweight, defensive Bash utility for managing multiple Epic Games Launcher 
    `chmod +x ./epic-switcher`
 
 2. **Configure Prefix:**
-   Open the script with a text editor and ensure the `EGS_PFX` variable points to your Epic Games Launcher Wine/Proton prefix.
+   Open the script with a text editor and ensure the `EGS_PFX` variable points to your Epic Games Launcher WINE/Proton prefix.
 
 ## 📖 Usage
 
@@ -54,11 +54,10 @@ A lightweight, defensive Bash utility for managing multiple Epic Games Launcher 
     export EGS_DEBUG=1
 
 ## 🏗️ Roadmap
-- Transition to **Registry-driven detection** (`HKCU\Volatile Environment`).
 - Transition to user-friendly CLI configuration.
 
 ## 🛡️ Dependencies
-- **Wine** or **Proton**
+- **WINE** or **Proton**
 - **rsync**
 - **coreutils**
 
