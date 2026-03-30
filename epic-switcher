@@ -19,7 +19,7 @@
 set -euo pipefail
 
 PROG_NAME=$(basename -- "$0")
-VERSION="0.2.0"
+VERSION="0.2.1"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 warn() { echo "WARNING: $*" >&2; }
@@ -45,93 +45,73 @@ check_deps "rsync"
 # CONFIG
 # =========================
 
+ACCOUNTS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/epic-accounts"
+ACCOUNTS_FILE="${ACCOUNTS_DIR}/accounts.txt"
+
 # WINE CONFIG
 # ============================================= # ========================================= #
 EGS_PFX="${HOME}/Games/Lutris/epic-games-store" # <— EDIT THIS TO BE YOUR EPIC GAMES PREFIX #
 # ============================================= # ========================================= #
 
-# ====================================== #
-# TODO: wine reg query to confirm prefix #
-require_prefix() {
-    : "${PREFIX_INITIALISED:=0}"
+init_egs_env() {
+    local wine_user drive_c basename localdata
+    : "${WINE_INIT:=0}"
+    [[ "$WINE_INIT" -eq 1 ]] && return 0
 
     if [[ -d "${EGS_PFX}/drive_c" ]]; then
         export WINEPREFIX="$EGS_PFX"
         export WINEDEBUG="-winediag"
-
-
-        if [[ $PREFIX_INITIALISED -eq 0 ]]; then
-            debug "Using WINEPREFIX: $WINEPREFIX"
-            PREFIX_INITIALISED=1
-        fi
-
+        debug "Using WINEPREFIX: $WINEPREFIX"
     else
         die "Wine prefix $EGS_PFX not found"
     fi
-}
-# ====================================== #
 
-# Detect the Wine user directory
-detect_wine_user_dir() {
-require_prefix
-# ================================= #
-# TODO: wine reg query for USERNAME #
-# Fallback to heuristics on fail    #
-# ================================= #
+    # Test prefix structure
+    drive_c="${EGS_PFX}/drive_c/users"
+    [[ -d "$drive_c" ]] || die "Cannot find users directory in Wine prefix"
 
-    local drive_c="$EGS_PFX/drive_c/users"
-    [[ -d "$drive_c" ]] || return 1
-
-    # Query Wine for the actual username (respects WINEUSERNAME env)
-    local wine_user
+    # Ask WINE for username
     wine_user=$(wine whoami 2>/dev/null | awk -F "\\" '{print $NF}' | tr -d '\r\n[:space:]') || true
-
-    # Validate it exists in prefix
     if [[ -n "$wine_user" && -d "$drive_c/$wine_user" ]]; then
-        printf '%s' "$wine_user"
+        WINE_USER="$wine_user"
         debug "Detected WINE whoami user: $wine_user"
-        return 0
+    else
+        # Fallback: check user directories for username
+        debug "WINE whoami failed. Using heuristic fallback"
+        for dir in "$drive_c"/*/; do
+            [[ -d "$dir" ]] || continue
+            basename=$(basename "$dir")
+            [[ "$basename" == "Public" || "$basename" == "Default" ]] && continue
+            WINE_USER="$basename"
+            debug "Heuristic match found. Using: $basename"
+            break
+        done
     fi
 
-    debug "WINE whoami failed. Attempting heuristic fallback"
+    [[ -n "$WINE_USER" ]] || die "Failed to detect Wine user directory"
 
-    # Fallback: scan for first non-system directory
-    for dir in "$drive_c"/*/; do
-        [[ -d "$dir" ]] || continue
-        local basename
-        basename=$(basename "$dir")
-        [[ "$basename" == "Public" || "$basename" == "Default" ]] && continue
-        printf '%s' "$basename"
-        debug "Heuristic match found. Using: $basename"
-        return 0
-    done
+    # PREFIX PATHS
+    # =============
+    INI_FILE="GameUserSettings.ini"
+    # wine reg query for LOCALAPPDATA
+    localdata=$(wine reg query "HKCU\\Volatile Environment" /v LOCALAPPDATA 2>/dev/null | awk -F' ' '/REG_SZ/ {print $NF}' | sed -e 's/\r//g' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//') || true
+    [[ -n $localdata ]] || die "Registry key for %LOCALAPPDATA% missing"
+    debug "Registry LOCALAPPDATA: $localdata"
+    EGS_LOCALDATA=$(winepath -u "$localdata") || true
+    debug "LOCALAPPDATA resolves to: ${EGS_LOCALDATA}"
+    EGS_APPDATA="${EGS_LOCALDATA}/EpicGamesLauncher/Saved"
+    [[ -d $EGS_APPDATA ]] || die "Can not find Epic Games %LOCALAPPDATA% directory. Is your prefix corrupt?"
+    # ===================================== #
+    EGS_CONFIG_DIR="${EGS_APPDATA}/Config/WindowsEditor"
+    EGS_CONFIG_FILE="${EGS_CONFIG_DIR}/${INI_FILE}"
 
-    debug "Failed to find valid WINE user. Please check the prefix and try again"
+    # REGISTRY INFO
+    # ==============
+    EGS_REG_KEY='HKCU\Software\Epic Games\Unreal Engine\Identifiers'
+    EGS_REG_VALUE='AccountId'
 
-    return 1
+    WINE_INIT=1
 }
-
-WINE_USER=$(detect_wine_user_dir) || die "Failed to detect Wine user directory"
-
-# PFX STRUCTURE
-# ==============
-INI_FILE="GameUserSettings.ini"
-ACCOUNTS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/epic-accounts"
-ACCOUNTS_FILE="${ACCOUNTS_DIR}/accounts.txt"
-
-# ===================================== #
-# TODO: wine reg query for LOCALAPPDATA #
-EGS_APPDATA="${EGS_PFX}/drive_c/users/${WINE_USER}/AppData/Local/EpicGamesLauncher/Saved"
-# ===================================== #
-
-EGS_CONFIG_DIR="${EGS_APPDATA}/Config/WindowsEditor"
-EGS_CONFIG_FILE="${EGS_CONFIG_DIR}/${INI_FILE}"
-#EGS_DATA_DIR="${EGS_APPDATA}/Data"
-
-# REGISTRY INFO
-# ==============
-EGS_REG_KEY='HKCU\Software\Epic Games\Unreal Engine\Identifiers'
-EGS_REG_VALUE='AccountId'
 
 # TIMERS
 # =======
@@ -245,7 +225,7 @@ set_active() {
 # ==================
 save_account_files() {
     validate_accounts_file
-    require_prefix
+    init_egs_env
     local name="$1"
     local store="${ACCOUNTS_DIR}/${name}"
 
@@ -258,7 +238,7 @@ save_account_files() {
 
 load_account_files() {
     validate_accounts_file
-    require_prefix
+    init_egs_env
     local name="$1"
     local store="${ACCOUNTS_DIR}/${name}"
 
@@ -271,22 +251,20 @@ load_account_files() {
 # WINE REQUESTS
 # ==============
 is_egs_running() {
-    require_prefix
+    init_egs_env
 
     if  winedbg --command "info proc" 2>/dev/null |
         grep -qi 'EpicGamesLauncher\.exe'; then
-        printf "\n"
         debug "winedbg: Epic Games Launcher is running"
         return 0
     else
-        printf "\n"
         debug "winedbg: Epic Games Launcher process not found"
         return 1
     fi
  }
 
 kill_egs() {
-    require_prefix
+    init_egs_env
     local tries=15 i
     local delay=$((SHUTDOWN_TIMEOUT / tries))
 
@@ -326,7 +304,7 @@ kill_egs() {
 }
 
 get_hkey_id() {
-    require_prefix
+    init_egs_env
     local hkey hkey_masked
 
     hkey=$(wine reg query "$EGS_REG_KEY" /v "$EGS_REG_VALUE" 2>/dev/null |
@@ -343,7 +321,7 @@ get_hkey_id() {
 }
 
 set_hkey_id() {
-    require_prefix
+    init_egs_env
     local uuid=${1:-}
 
     wine reg add "$EGS_REG_KEY" /v "$EGS_REG_VALUE" /t REG_SZ /d "$uuid" /f >/dev/null
@@ -353,6 +331,7 @@ set_hkey_id() {
 # COMMANDS
 # =========================
 prompt_create_unknown() {
+    init_egs_env
     local uuid="$1" name ans
 
     read -rp "Unrecognised Epic account detected. Create new entry? [y/N] " ans
@@ -374,7 +353,7 @@ prompt_create_unknown() {
 cmd_new() {
     # Check if we have exactly 1 argument
     [[ "$#" -eq 1 ]] || die "Usage: ${PROG_NAME} new <name>"
-    require_prefix
+    init_egs_env
     validate_accounts_file
     local new_name="$1" old_name hkey existing ans
     old_name=$(active_account || true)
@@ -424,7 +403,7 @@ cmd_save() {
     # Check if we have ≤ 1 arguments
     [[ "$#" -le 1 ]] || die "Usage: ${PROG_NAME} save [name]"
     validate_accounts_file
-    require_prefix
+    init_egs_env
     local name="${1:-}" hkey active_name uuid active
     [[ -n "$name" ]] && validate_account_name "$name"
     hkey=$(get_hkey_id) || die "No Epic account logged in"
@@ -465,7 +444,7 @@ cmd_load() {
     # Check if we have exactly 1 argument
     [[ "$#" -eq 1 ]] || die "Usage: ${PROG_NAME} load <name>"
     validate_accounts_file
-    require_prefix
+    init_egs_env
     local name="$1" uuid hkey active_name
     uuid=$(account_by_name "$name")
     hkey=$(get_hkey_id || true)
