@@ -20,7 +20,7 @@ A clear and concise description of what you expected to happen.
 
 **Observed behaviour**
 If applicable, add CLI output or screenshots to help explain your problem.
- - use `EGS_DEBUG=1 [command]` to get debug log in CLI
+ - use `EGS_DEBUG=1 epic-switcher [command]` to get debug log in CLI
 
 **Desktop (please complete the following information):**
  - epic-switcher Version: [e.g. 0.1.0] (use `epic-switcher --version`)
