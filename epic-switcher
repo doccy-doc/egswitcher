@@ -18,160 +18,275 @@
 
 set -euo pipefail
 
+# =========================
+# USER PERMS CHECK
+# =========================
+
+[[ $(id -u) -ne 0 ]] || { echo "ERROR: Cannot run as root." >&2; exit 1; }
+[[ $(whoami) == "$USER" ]] || { echo "ERROR: User mismatch ($USER vs $(whoami))." >&2; exit 1; }
+
+# =========================
+# GLOBAL VARIABLES
+# =========================
+
+# PROGRAM
+# ========
 PROG_NAME=$(basename -- "$0")
-VERSION="0.2.1"
+PROG_XDG_NAME="egswitcher"
+VERSION="0.3.0"
 
-die() { echo "ERROR: $*" >&2; exit 1; }
-warn() { echo "WARNING: $*" >&2; }
-info() { echo "INFO: $*" >&2; }
-success() { echo "SUCCESS: $*" >&2; }
-debug() { [[ "${EGS_DEBUG:-0}" = "1" ]] && echo "DEBUG: $*" >&2 || true; }
+# XDG FILES
+# ==========
+PROG_XDG_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/${PROG_XDG_NAME}"
+PROG_XDG_TMP="${PROG_XDG_CACHE}/tmp"
+PROG_XDG_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/${PROG_XDG_NAME}"
+PROG_XDG_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/${PROG_XDG_NAME}"
+ACCOUNTS_FILE="${PROG_XDG_DIR}/accounts.state"
+CONFIG_FILE="${PROG_XDG_CONFIG}/${PROG_XDG_NAME}.conf"
 
-# =========================
-# DEPENDENCIES
-# =========================
+# CONFIG VARIABLES
+# =================
+CONFIG_VARS=("EGS_PFX" "EGS_DEBUG") # CONFIG_FILE
 
-check_deps() {
-    local dep=$1
-    command -v "$dep" &>/dev/null || die "Missing dependency: ${dep} not installed"
-}
+# FIRST-RUN INSTALL
+# ==================
+#create XDG folders
+[[ -d "$PROG_XDG_TMP" ]] || mkdir -p "$PROG_XDG_TMP"
+[[ -d "$PROG_XDG_DIR" ]] || mkdir -p "$PROG_XDG_DIR"
+[[ -d "$PROG_XDG_CONFIG" ]] || mkdir -p "$PROG_XDG_CONFIG"
+#create sourced files
+[[ -f "$CONFIG_FILE" ]] || install -m 644 -D <(printf "%s=\n" "${CONFIG_VARS[@]}") "$CONFIG_FILE"
+[[ -f "$ACCOUNTS_FILE" ]] || install -m 600 -D /dev/null "$ACCOUNTS_FILE"
 
-check_deps "wine"
-check_deps "wineserver"
-check_deps "winedbg"
-check_deps "rsync"
+# SOURCE CONFIG FILE
+# ===================
+# shellcheck source=/dev/null
+. "${CONFIG_FILE}" # EGS_PFX EGS_DEBUG
+# FLAGS
+# ======
+: "${WINE_INIT:=0}"
+: "${EGS_DEBUG:=0}" # CONFIG_FILE
 
-# =========================
-# CONFIG
-# =========================
+# WINE VARS
+# ==========
+EGS_REG_KEY='HKCU\Software\Epic Games\Unreal Engine\Identifiers'
+EGS_REG_VALUE='AccountId'
+# Dynamic defaults
+: "${EGS_PFX:="${HOME}/.wine"}" # CONFIG_FILE
+: "${WINE_USER:="${USER}"}"
+# Envar overrides
+EGS_PFX="${EGSPFX:-$EGS_PFX}"
+EGS_DEBUG="${EGSDEBUG:-$EGS_DEBUG}"
 
-ACCOUNTS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/epic-accounts"
-ACCOUNTS_FILE="${ACCOUNTS_DIR}/accounts.txt"
-
-# WINE CONFIG
-# ============================================= # ========================================= #
-EGS_PFX="${HOME}/Games/Lutris/epic-games-store" # <— EDIT THIS TO BE YOUR EPIC GAMES PREFIX #
-# ============================================= # ========================================= #
-
-init_egs_env() {
-    local wine_user drive_c basename localdata
-    : "${WINE_INIT:=0}"
-    [[ "$WINE_INIT" -eq 1 ]] && return 0
-
-    if [[ -d "${EGS_PFX}/drive_c" ]]; then
-        export WINEPREFIX="$EGS_PFX"
-        export WINEDEBUG="-winediag"
-        debug "Using WINEPREFIX: $WINEPREFIX"
-    else
-        die "Wine prefix $EGS_PFX not found"
-    fi
-
-    # Test prefix structure
-    drive_c="${EGS_PFX}/drive_c/users"
-    [[ -d "$drive_c" ]] || die "Cannot find users directory in Wine prefix"
-
-    # Ask WINE for username
-    wine_user=$(wine whoami 2>/dev/null | awk -F "\\" '{print $NF}' | tr -d '\r\n[:space:]') || true
-    if [[ -n "$wine_user" && -d "$drive_c/$wine_user" ]]; then
-        WINE_USER="$wine_user"
-        debug "Detected WINE whoami user: $wine_user"
-    else
-        # Fallback: check user directories for username
-        debug "WINE whoami failed. Using heuristic fallback"
-        for dir in "$drive_c"/*/; do
-            [[ -d "$dir" ]] || continue
-            basename=$(basename "$dir")
-            [[ "$basename" == "Public" || "$basename" == "Default" ]] && continue
-            WINE_USER="$basename"
-            debug "Heuristic match found. Using: $basename"
-            break
-        done
-    fi
-
-    [[ -n "$WINE_USER" ]] || die "Failed to detect Wine user directory"
-
-    # PREFIX PATHS
-    # =============
-    INI_FILE="GameUserSettings.ini"
-    # wine reg query for LOCALAPPDATA
-    localdata=$(wine reg query "HKCU\\Volatile Environment" /v LOCALAPPDATA 2>/dev/null | awk -F' ' '/REG_SZ/ {print $NF}' | sed -e 's/\r//g' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//') || true
-    [[ -n $localdata ]] || die "Registry key for %LOCALAPPDATA% missing"
-    debug "Registry LOCALAPPDATA: $localdata"
-    EGS_LOCALDATA=$(winepath -u "$localdata") || true
-    debug "LOCALAPPDATA resolves to: ${EGS_LOCALDATA}"
-    EGS_APPDATA="${EGS_LOCALDATA}/EpicGamesLauncher/Saved"
-    [[ -d $EGS_APPDATA ]] || die "Can not find Epic Games %LOCALAPPDATA% directory. Is your prefix corrupt?"
-    # ===================================== #
-    EGS_CONFIG_DIR="${EGS_APPDATA}/Config/WindowsEditor"
-    EGS_CONFIG_FILE="${EGS_CONFIG_DIR}/${INI_FILE}"
-
-    # REGISTRY INFO
-    # ==============
-    EGS_REG_KEY='HKCU\Software\Epic Games\Unreal Engine\Identifiers'
-    EGS_REG_VALUE='AccountId'
-
-    WINE_INIT=1
-}
+# PFX FILES
+# ==========
+INI_FILE="GameUserSettings.ini"
+# Dynamic defaults
+: "${EGS_USERDIR:="${EGS_PFX}/drive_c/users"}"
+: "${EGS_LOCALDATA:="${EGS_USERDIR}/${WINE_USER}/AppData/Local"}"
+: "${EGS_APPDATA:="${EGS_LOCALDATA}/EpicGamesLauncher/Saved"}"
+: "${EGS_CONFIG_DIR:="${EGS_APPDATA}/Config/WindowsEditor"}"
+: "${EGS_CONFIG_FILE:="${EGS_CONFIG_DIR}/${INI_FILE}"}"
 
 # TIMERS
 # =======
 SHUTDOWN_TIMEOUT=30
 
 # =========================
-# UTIL
+# MESSAGE HANDLERS
 # =========================
 
-# VALIDATION
-# ===========
-validate_account_name() {
-    local name="$1"
-    [[ "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$ ]] || die "Invalid account name: $name"
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'WARNING: %s\n' "$*" >&2; }
+info() { printf 'INFO: %s\n' "$*" >&2; }
+success() { printf 'SUCCESS: %s\n' "$*" >&2; }
+debug() { [[ "$EGS_DEBUG" = "1" ]] && printf 'DEBUG: ' >&2 && printf '%q ' "$@" >&2 && printf '\n' >&2 || true; }
+
+# =========================
+# BOOTSTRAP
+# =========================
+
+check_dep() {
+    command -v "$1" &>/dev/null || die "Missing dependency: $1 not installed"
 }
 
-validate_accounts_file() {
+init_deps() {
+    local dep
+    for dep in "$@"; do
+        case "$dep" in
+            wine)
+                check_dep "wine"
+                check_dep "wineserver"
+                check_dep "winedbg"
+                ;;
+            file)
+                check_dep "rsync"
+                ;;
+            *)
+                die "Internal error: Unknown dependency group '$dep'"
+                ;;
+        esac
+    done
+}
+
+# trap and delete temp files on exit
+trap 'rm -rf "${PROG_XDG_TMP}"' EXIT
+
+# =========================
+# VALIDATION
+# =========================
+
+sanitise_sed_path() {
+    local path="$1"
+    path="${path%/}"
+    path="${path%\\}"
+    # printf '%s\n' "$path" | sed 's/[\\&/'"'"']/\\&/g'
+    printf '%s\n' "$path" | sed "s/[\\\\&/'\$\`]/\\\\&/g; s/'/'\\\\\\\''/g"
+}
+
+guard_config_file() {
+    for var in "${CONFIG_VARS[@]}"; do
+         grep -q "^${var}=" "$CONFIG_FILE" || die "Config corrupted: missing $var"
+    done
+    return 0
+}
+
+validate_account_name() {
+    local name="$1"
+    [[ "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$ ]] || return 1
+    return 0
+}
+
+guard_accounts_file() {
     local marks names ids
 
-    mkdir -p "$ACCOUNTS_DIR"
-    [ -f "$ACCOUNTS_FILE" ] || : > "$ACCOUNTS_FILE"
+    [[ -s "$ACCOUNTS_FILE" ]] || return 0
 
     marks=$(grep -c '^\* ' "$ACCOUNTS_FILE" || true)
-    [ "$marks" -le 1 ] || die "accounts.txt corrupted: multiple active (*) entries"
+    [[ "$marks" -le 1 ]] || die "accounts.db corrupted: multiple active (*) entries"
 
     names=$(awk '{print $2}' "$ACCOUNTS_FILE" | sort | uniq -d || true)
-    [ -z "$names" ] || die "accounts.txt corrupted: duplicate account names"
+    [[ -z "$names" ]] || die "accounts.db corrupted: duplicate account names"
 
     ids=$(awk '{print $3}' "$ACCOUNTS_FILE" | sort | uniq -d || true)
-    [ -z "$ids" ] || die "accounts.txt corrupted: duplicate account IDs"
+    [[ -z "$ids" ]] || die "accounts.db corrupted: duplicate account IDs"
 
     awk '
         NF==0 {next}
         NF!=3 {exit 1}
         $1!="*" && $1!="-" {exit 1}
-    ' "$ACCOUNTS_FILE" || die "accounts.txt corrupted: invalid line format"
+    ' "$ACCOUNTS_FILE" || die "accounts.db corrupted: invalid line format"
 }
 
-# DATABASE ACCESS
-# ================
+validate_prefix() {
+    local new_pfx="${1:-$EGS_PFX}"
+    [[ -d "${new_pfx}/drive_c/users" ]] || { debug "Cannot find users directory in path: ${new_pfx}" && return 1 ; }
+    return 0
+}
+
+# =========================
+# INITIALISATION
+# =========================
+
+init_egs_env() {
+    local wine_user base_dir localdata ans
+
+    # Skip if init already done
+    [[ "$WINE_INIT" -eq 1 ]] && return 0
+
+    # Validate prefix
+    if ! validate_prefix; then
+        # Prompt for valid prefix
+        while true; do
+            read -rp "Would you like to edit the prefix path? [y/N] " ans
+            case "$ans" in
+                y|Y)
+                    # new prefix wizard
+                    info "Starting wizard..."
+                    prompt_new_prefix
+                    break
+                    ;;
+                x|X|n|N)
+                    die "Aborted. Cannot continue without a prefix"
+                    ;;
+                *)
+                    warn "Unrecognised input: $ans. Please enter Y or N "
+                    ;;
+            esac
+        done
+    fi
+
+    # Apply the validated prefix state
+    export WINEPREFIX="$EGS_PFX"
+    export WINEDEBUG="-winediag"
+    EGS_USERDIR="${EGS_PFX}/drive_c/users"
+    debug "Using WINEPREFIX: $WINEPREFIX"
+
+    # Ask WINE for username
+    wine_user="$(wine whoami 2>/dev/null | awk -F "\\" '{print $NF}' | tr -d '\r\n[:space:]')" || true
+    if [[ -n "$wine_user" && -d "$EGS_USERDIR/$wine_user" ]]; then
+        WINE_USER="$wine_user"
+        debug "Detected WINE whoami user: $wine_user"
+    else
+        # Fallback: check user directories for username
+        debug "WINE whoami failed. Using heuristic fallback"
+        for dir in "$EGS_USERDIR"/*/; do
+            [[ -d "$dir" ]] || continue
+            base_dir="$(basename "$dir")"
+            [[ "$base_dir" == "Public" || "$base_dir" == "Default" ]] && continue
+            WINE_USER="$base_dir"
+            debug "Heuristic match found. Using: $base_dir"
+            break
+        done
+    fi
+
+    [[ -n "$WINE_USER" ]] || die "Failed to detect Wine user directory"
+
+    # wine reg query for LOCALAPPDATA
+    localdata="$(wine reg query "HKCU\\Volatile Environment" /v LOCALAPPDATA 2>/dev/null | awk -F' ' '/REG_SZ/ {print $NF}' | sed -e 's/\r//g' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')" || true
+    [[ -n "$localdata" ]] || die "Registry key for %LOCALAPPDATA% missing"
+    debug "Registry LOCALAPPDATA: $localdata"
+    EGS_LOCALDATA="$(winepath -u "$localdata")" || die "winepath failed to convert Windows path to Linux path"
+    debug "LOCALAPPDATA resolves to: ${EGS_LOCALDATA}"
+    EGS_APPDATA="${EGS_LOCALDATA}/EpicGamesLauncher/Saved"
+    [[ -d "$EGS_APPDATA" ]] || die "Can not find Epic Games %LOCALAPPDATA% directory. Is your prefix corrupt?"
+
+    # set prefix paths
+    EGS_CONFIG_DIR="${EGS_APPDATA}/Config/WindowsEditor"
+    EGS_CONFIG_FILE="${EGS_CONFIG_DIR}/${INI_FILE}"
+
+    # flag init complete
+    WINE_INIT=1
+}
+
+# =========================
+# CRUD
+# =========================
+
+# READ
+# =====
 account_by_id() {
-    validate_accounts_file
-    awk -v id="$1" '$3==id {print $2}' "$ACCOUNTS_FILE"
+    guard_accounts_file
+    awk -v id="$1" '$3==id {print $2; exit}' "$ACCOUNTS_FILE"
 }
 
 account_by_name() {
-    validate_accounts_file
-    awk -v n="$1" '$2==n {print $3}' "$ACCOUNTS_FILE"
+    guard_accounts_file
+    awk -v n="$1" '$2==n {print $3; exit}' "$ACCOUNTS_FILE"
 }
 
 account_exists() {
-    validate_accounts_file
-    awk -v n="$1" '$2==n {found=1} END {exit found ? 0 : 1}' "$ACCOUNTS_FILE"
+    guard_accounts_file
+    awk -v n="$1" '$2==n {found=1; exit} END {exit found ? 0 : 1}' "$ACCOUNTS_FILE"
 }
 
 active_account() {
-    validate_accounts_file
-    awk '$1=="*" {print $2}' "$ACCOUNTS_FILE"
+    guard_accounts_file
+    awk '$1=="*" {print $2; exit}' "$ACCOUNTS_FILE"
 }
 
+# CREATE
+# =======
 construct_entry() {
     local name="$1" uuid="$2" active="$3" mark="-"
     [[ "$active" == "true" ]] && mark="*"
@@ -180,10 +295,9 @@ construct_entry() {
 }
 
 commit_entry() {
-    validate_accounts_file
-    local name="$1" uuid="$2" active="${3:-'true'}" tmp="${ACCOUNTS_FILE}.tmp.$$"  line
+    guard_accounts_file
+    local name="$1" uuid="$2" active="${3:-'true'}" tmp="${PROG_XDG_TMP}/accounts-upsert.tmp.$$"  line
     line=$(construct_entry "$name" "$uuid" "$active")
-    [ -f "$ACCOUNTS_FILE" ] || touch "$ACCOUNTS_FILE"
 
     awk -v n="$name" -v L="$line" '
         BEGIN { found=0 }
@@ -193,16 +307,10 @@ commit_entry() {
     ' "$ACCOUNTS_FILE" > "$tmp" && mv "$tmp" "$ACCOUNTS_FILE"
 }
 
-delete_entry() {
-    validate_accounts_file
-    local name="$1" tmp="${ACCOUNTS_FILE}.tmp.$$"
-
-    awk -v n="$name" '$2 != n {print}' "$ACCOUNTS_FILE" >"$tmp" || die "Failed to create temp file"
-    mv -- "$tmp" "$ACCOUNTS_FILE" || die "Failed to update accounts file"
-}
-
+# UPDATE
+# =======
 set_inactive() {
-    validate_accounts_file
+    guard_accounts_file
     local name="$1" uuid
     uuid="$(account_by_name "$name")"
 
@@ -211,7 +319,7 @@ set_inactive() {
 }
 
 set_active() {
-    validate_accounts_file
+    guard_accounts_file
     local name="$1" uuid old_name
     uuid="$(account_by_name "$name")"
     old_name="$(active_account)"
@@ -221,35 +329,59 @@ set_active() {
     commit_entry "$name" "$uuid" "true"
 }
 
+# DELETE
+# =======
+delete_entry() {
+    guard_accounts_file
+    local name="$1" tmp="${PROG_XDG_TMP}/accounts-delete.tmp.$$"
+
+    awk -v n="$name" '$2 != n {print}' "$ACCOUNTS_FILE" >"$tmp" || die "Failed to create temp file"
+    mv -- "$tmp" "$ACCOUNTS_FILE" || die "Failed to update accounts file"
+}
+
+# =========================
 # FILE MANIPULATION
-# ==================
+# =========================
+
 save_account_files() {
-    validate_accounts_file
+    guard_accounts_file
     init_egs_env
     local name="$1"
-    local store="${ACCOUNTS_DIR}/${name}"
+    local store="${PROG_XDG_DIR}/${name}"
 
     debug "Syncing $name from $EGS_CONFIG_FILE to $store"
 
     mkdir -p "$store"
-    [ -f "$EGS_CONFIG_FILE" ] || die "No $INI_FILE to save"
+    [[ -f "$EGS_CONFIG_FILE" ]] || die "No $INI_FILE to save"
     rsync -a "$EGS_CONFIG_FILE" "$store/"
 }
 
 load_account_files() {
-    validate_accounts_file
+    guard_accounts_file
     init_egs_env
     local name="$1"
-    local store="${ACCOUNTS_DIR}/${name}"
+    local store="${PROG_XDG_DIR}/${name}"
 
     debug "Syncing $name from $store to $EGS_CONFIG_FILE"
-
     mkdir -p "$EGS_CONFIG_DIR"
     rsync -a "${store}/${INI_FILE}" "$EGS_CONFIG_DIR/"
+    debug "Account \"$name\" synced"
 }
 
+save_config_files() {
+    guard_config_file
+    local key="$1" value="$2" san_value
+    san_value=$(sanitise_sed_path "$value")
+
+    debug "Updating ${key} to ${value}"
+    sed -i "s/^${key}=.*/${key}='${san_value}'/" "$CONFIG_FILE"
+    debug "Config ${key} updated"
+}
+
+# =========================
 # WINE REQUESTS
-# ==============
+# =========================
+
 is_egs_running() {
     init_egs_env
 
@@ -261,7 +393,7 @@ is_egs_running() {
         debug "winedbg: Epic Games Launcher process not found"
         return 1
     fi
- }
+}
 
 kill_egs() {
     init_egs_env
@@ -322,7 +454,7 @@ get_hkey_id() {
 
 set_hkey_id() {
     init_egs_env
-    local uuid=${1:-}
+    local uuid="${1:-}"
 
     wine reg add "$EGS_REG_KEY" /v "$EGS_REG_VALUE" /t REG_SZ /d "$uuid" /f >/dev/null
 }
@@ -330,19 +462,40 @@ set_hkey_id() {
 # =========================
 # COMMANDS
 # =========================
+
+prompt_new_prefix() {
+    local new_pfx
+
+    while true; do
+        read -re -p "Enter Wine prefix path: " new_pfx
+        if validate_prefix "$new_pfx"; then
+            EGS_PFX="$new_pfx"
+            save_config_files "EGS_PFX" "$new_pfx"
+            return 0
+        fi
+        warn "Invalid prefix path: ${new_pfx}. Please try again:"
+    done
+}
+
 prompt_create_unknown() {
     init_egs_env
     local uuid="$1" name ans
 
     read -rp "Unrecognised Epic account detected. Create new entry? [y/N] " ans
-    [[ "$ans" =~ ^[Yy]$ ]] || exit 1
+    [[ "$ans" =~ ^[Yy]$ ]] || return 1
 
-# =========================================== #
-# TODO: Make while loop to force correct name #
-    read -rp "Account name: " name
-    validate_account_name "$name"
-    account_exists "$name" && die "Name already exists"
-# =========================================== #
+    # Prompt for new name
+    while true; do
+        read -rp "Account name: " name
+        # Validate user input
+        if ! validate_account_name "$name"; then
+            warn "Invalid account name: ${name}. Please try again:"
+        elif account_exists "$name"; then
+            warn "The name ${name} already exists. Please try again:"
+        else
+            break
+        fi
+    done
 
     save_account_files "$name"
     commit_entry "$name" "$uuid" "true"
@@ -353,13 +506,14 @@ prompt_create_unknown() {
 cmd_new() {
     # Check if we have exactly 1 argument
     [[ "$#" -eq 1 ]] || die "Usage: ${PROG_NAME} new <name>"
+    init_deps "wine" "file"
+    guard_accounts_file
     init_egs_env
-    validate_accounts_file
     local new_name="$1" old_name hkey existing ans
     old_name=$(active_account || true)
     hkey=$(get_hkey_id || true)
 
-    validate_account_name "$new_name"
+    validate_account_name "$new_name" || die "invalid account name: $new_name"
     account_exists "$new_name" && die "Name already exists"
     kill_egs
 
@@ -386,7 +540,7 @@ cmd_new() {
                 kill_egs
                 if [[ -n "$old_name" ]]; then
                     cmd_load "$old_name"
-                    else
+                else
                     info "No previous account to load. Cleared Epic Games Launcher state"
                     exit 0
                 fi
@@ -400,12 +554,13 @@ cmd_new() {
 }
 
 cmd_save() {
-    # Check if we have ≤ 1 arguments
+    # Check if we have lte 1 arguments
     [[ "$#" -le 1 ]] || die "Usage: ${PROG_NAME} save [name]"
-    validate_accounts_file
+    init_deps "wine" "file"
+    guard_accounts_file
     init_egs_env
     local name="${1:-}" hkey active_name uuid active
-    [[ -n "$name" ]] && validate_account_name "$name"
+    [[ -n "$name" ]] && { validate_account_name "$name" || die "invalid account name: $name" ; }
     hkey=$(get_hkey_id) || die "No Epic account logged in"
     active_name=$(account_by_id "$hkey" || true)
 
@@ -443,14 +598,16 @@ cmd_save() {
 cmd_load() {
     # Check if we have exactly 1 argument
     [[ "$#" -eq 1 ]] || die "Usage: ${PROG_NAME} load <name>"
-    validate_accounts_file
+    init_deps "wine" "file"
+    guard_accounts_file
     init_egs_env
     local name="$1" uuid hkey active_name
+
+    validate_account_name "$name" || die "invalid account name: $name"
+    account_exists "$name" || die "Account not found"
     uuid=$(account_by_name "$name")
     hkey=$(get_hkey_id || true)
 
-    validate_account_name "$name"
-    account_exists "$name" || die "Account not found"
     kill_egs
 
     # Check for active account
@@ -460,7 +617,7 @@ cmd_load() {
         if account_exists "$active_name"; then
             save_account_files "$active_name"
         else
-            prompt_create_unknown "$hkey"
+            prompt_create_unknown "$hkey" || warn "Abandoning unknown account"
         fi
     fi
 
@@ -474,10 +631,10 @@ cmd_load() {
 cmd_delete() {
     # Check if we have exactly 1 argument
     [[ "$#" -eq 1 ]] || die "Usage: ${PROG_NAME} delete <name>"
-    validate_accounts_file
+    guard_accounts_file
     local name="$1"
 
-    validate_account_name "$name"
+    validate_account_name "$name" || die "invalid account name: $name"
     account_exists "$name" || die "Account not found"
 
     # Check against active
@@ -485,26 +642,27 @@ cmd_delete() {
 
     # Delete
     delete_entry "$name"
-    rm -rf -- "${ACCOUNTS_DIR:?}/${name}"
+    rm -rf -- "${PROG_XDG_DIR:?}/${name}"
     success "Deleted account: $name"
 }
 
 cmd_rename() {
     # Check if we have exactly 2 arguments
     [[ "$#" -eq 2 ]] || die "Usage: ${PROG_NAME} rename <old_name> <new_name>"
-    validate_accounts_file
+    guard_accounts_file
     local old_name="$1" new_name="$2"
 
-    validate_account_name "$new_name"
-    validate_account_name "$old_name"
+    validate_account_name "$new_name" || die "invalid account name: $new_name"
+    validate_account_name "$old_name" || die "invalid account name: $old_name"
     account_exists "$old_name" || die "Source name $old_name not found"
     ! account_exists "$new_name" || die "Target name $new_name already exists"
 
     # Rename
-    mv -- "${ACCOUNTS_DIR}/${old_name}" "${ACCOUNTS_DIR}/${new_name}"
+    mv -- "${PROG_XDG_DIR}/${old_name}" "${PROG_XDG_DIR}/${new_name}"
 
 # TODO: ADD FUNCTIONS delete_entry + commit_entry (with test for *) #
 # Leaving atomic sed inplace as it is less prone to DB corruption.  #
+# Would require single-use function "edit_entry" to be atomic.      #
 # ================================================================= #
     sed -i "s/^\\([*-]\\) $old_name /\\1 $new_name /" "$ACCOUNTS_FILE"
 # ================================================================= #
@@ -512,7 +670,7 @@ cmd_rename() {
 }
 
 cmd_list() {
-    validate_accounts_file
+    guard_accounts_file
 
     printf "%-8s %-20s %s\n" STATUS NAME ID
     printf "%-8s %-20s %s\n" ------ ---- --
@@ -522,39 +680,110 @@ cmd_list() {
     done <"$ACCOUNTS_FILE"
 }
 
+cmd_config() {
+    [[ $# -le 2 ]] || die "Usage: ${PROG_NAME} config [<key> <value>]. e.g. config pfx \"${HOME}/.wine\""
+    guard_config_file
+    local key_suffix="${1:-}" value="${2:-}" key_exists=0 key_name
+
+    # If no arguments, print friendly config list
+    if [[ $# -lt 1 ]]; then
+    info 'Config file (key: value): ' && sed -r 's/^(EGS_)?([^=]+)=/\L\2\E: /' "$CONFIG_FILE"
+    return
+    fi
+
+    # create key name from suffix
+    declare -u "key_name=EGS_${key_suffix}"
+
+    # Test key against config array
+    for source_key in "${CONFIG_VARS[@]}"; do
+        [[ "$source_key" == "$key_name" ]] && key_exists=1 && break
+    done
+
+    # filter for invalid key
+    [[ "$key_exists" -eq 1 ]] || die "Invalid key: '$key_suffix'. Valid options: ${CONFIG_VARS[*]}"
+
+    # Prompt user for value if not provided
+    if [[ -z "$value" ]]; then
+        debug "No value given for key: ${key_name}"
+        while true; do
+            read -re -p "Enter the new ${key_suffix} value: " value
+            case "$key_suffix" in
+                # special case for pfx
+                "pfx")
+                    if ! validate_prefix "$value"; then
+                        warn "Invalid path. Please try again:"
+                        continue
+                    fi
+                    ;;
+                # everything else
+                *)
+                    if [[ -z "$value" ]]; then
+                        warn "Value cannot be empty. Please try again:"
+                        continue
+                    fi
+                    ;;
+            esac
+            break
+        done
+    fi
+
+
+
+    # special check for prefix
+    [[ "$key_suffix" == "pfx" ]] && { validate_prefix "$value" || die "Invalid prefix: ${value}" ; }
+
+    # set new values
+    # declare -g "${key_name}=\"${value}\""
+    printf -v "$key_name" '%s' "$value"
+    save_config_files "$key_name" "$value"
+
+    success "Successfully updated $key_suffix."
+}
+
 cmd_help() {
         cat <<EOF
 
 Commands:
-  new <name>          Create a new account with name <name>
-                      Example: $PROG_NAME new MyAccount
+  new <name>            Create a new account with name <name>
+                        Example: $PROG_NAME new MyAccount
 
-  save [name]         Save the current account. Optionally specify <name>
-                      If specified <name> does not exist, a new account will be created
-                      Examples:
-                        $PROG_NAME save                 # Save current account using existing active name
-                        $PROG_NAME save ExistingAccount # Same as: $PROG_NAME save
-                        $PROG_NAME save NewAccount      # Save new account with name NewAccount
+  save [name]           Save the current account. Optionally specify <name>
+                        If specified <name> does not exist, a new account will be created
+                        Examples:
+                          $PROG_NAME save                 # Save current account using existing active name
+                          $PROG_NAME save ExistingAccount # Same as: $PROG_NAME save
+                          $PROG_NAME save NewAccount      # Save new account with name NewAccount
 
-  load <name>         Load an existing account by name
-                      Example: $PROG_NAME load MyAccount
+  load <name>           Load an existing account by name
+                        Example: $PROG_NAME load MyAccount
 
-  delete <name>       Delete an existing account (cannot delete the active account)
-                      Example: $PROG_NAME delete MyAccount
+  delete <name>         Delete an existing account (cannot delete the active account)
+                        Example: $PROG_NAME delete MyAccount
 
-  rename <old> <new>  Rename an account from <old> to <new>
-                      Example: $PROG_NAME rename OldName NewName
+  rename <old> <new>    Rename an account from <old> to <new>
+                        Example: $PROG_NAME rename OldName NewName
 
-  list                List all saved accounts and the currently active one
-                      Example: $PROG_NAME list
+  config                Show all config options
+                        Example: $PROG_NAME config
+
+  config <key> [value]  Change a config <key> to [value]. Will prompt for [value] if not specified.
+                        Examples:
+                          $PROG_NAME config pfx \"$HOME/.wine\"
+                          $PROG_NAME config debug 1
+
+  list                  List all saved accounts and the currently active one
+                        Example: $PROG_NAME list
 
 EOF
 }
 
 cmd_desc(){
     cat <<EOF
+
 EGSwitcher
-A tool for swapping Epic Games accounts in the Epic Games Launcher without having to manually logout and login each time. Works on Linux with either WINE or proton
+A tool for swapping Epic Games accounts in the Epic Games Launcher without having to manually logout and login each time. Works on Linux with either WINE or proton.
+Copyright (C) 2025 doccy-doc. License: GPL-3.0-only
+
 EOF
 }
 
@@ -570,6 +799,7 @@ case "$CMD" in
     load)   cmd_load "$@" ;;
     delete) cmd_delete "$@" ;;
     rename) cmd_rename "$@" ;;
+    config)   cmd_config "$@" ;;
     list)   cmd_list ;;
     -v|--version)
         echo "$VERSION"
