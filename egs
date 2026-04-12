@@ -194,6 +194,9 @@ init_egs_env() {
     # Skip if init already done
     [[ "$WINE_INIT" -eq 1 ]] && return 0
 
+    # Guard against invalid ephemeral override
+    [[ -n "${EGSPFX:-}" ]] && { validate_prefix "$EGSPFX" || die "Invalid override prefix: ${EGSPFX}" ; }
+
     # Validate prefix
     if ! validate_prefix; then
         # Prompt for valid prefix
