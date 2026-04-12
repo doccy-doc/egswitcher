@@ -33,7 +33,7 @@ set -euo pipefail
 # ========
 PROG_NAME=$(basename -- "$0")
 PROG_XDG_NAME="egswitcher"
-VERSION="0.3.0"
+VERSION="1.0.0"
 
 # XDG FILES
 # ==========
@@ -296,7 +296,7 @@ construct_entry() {
 
 commit_entry() {
     guard_accounts_file
-    local name="$1" uuid="$2" active="${3:-'true'}" tmp="${PROG_XDG_TMP}/accounts-upsert.tmp.$$"  line
+    local name="$1" uuid="$2" active="${3:-true}" tmp="${PROG_XDG_TMP}/accounts-upsert.tmp.$$"  line
     line=$(construct_entry "$name" "$uuid" "$active")
 
     awk -v n="$name" -v L="$line" '
@@ -437,10 +437,11 @@ kill_egs() {
 
 get_hkey_id() {
     init_egs_env
-    local hkey hkey_masked
+    local hkey hkey_masked wine_status
 
-    hkey=$(wine reg query "$EGS_REG_KEY" /v "$EGS_REG_VALUE" 2>/dev/null |
-           awk '/REG_SZ/ {print $NF}' | tr -d '\r')
+    hkey=$(wine reg query "$EGS_REG_KEY" /v "$EGS_REG_VALUE" 2>/dev/null)
+    wine_status=$?
+    hkey=$(awk '/REG_SZ/ {print $NF}' <<< "$hkey" | tr -d '\r')
 
     if [[ -n "$hkey" ]]; then
         hkey_masked="${hkey:0:4}****${hkey: -4}"
@@ -450,6 +451,7 @@ get_hkey_id() {
     fi
 
     printf '%s' "$hkey"
+    return "$wine_status"
 }
 
 set_hkey_id() {
@@ -477,49 +479,118 @@ prompt_new_prefix() {
     done
 }
 
-prompt_create_unknown() {
-    init_egs_env
-    local uuid="$1" name ans
+# prompt_create_unknown() {
+#     init_egs_env
+#     local uuid="$1" name ans
+#
+#     read -rp "Unrecognised Epic account detected. Create new entry? [y/N] " ans
+#     [[ "$ans" =~ ^[Yy]$ ]] || return 1
+#
+#     # Prompt for new name
+#     while true; do
+#         read -rp "Account name: " name
+#         # Validate user input
+#         if ! validate_account_name "$name"; then
+#             warn "Invalid account name: ${name}. Please try again:"
+#         elif account_exists "$name"; then
+#             warn "The name ${name} already exists. Please try again:"
+#         else
+#             break
+#         fi
+#     done
+#
+#     save_account_files "$name"
+#     commit_entry "$name" "$uuid" "true"
+#     set_active "$name"
+#     success "Created new account: $name"
+# }
 
-    read -rp "Unrecognised Epic account detected. Create new entry? [y/N] " ans
-    [[ "$ans" =~ ^[Yy]$ ]] || return 1
+handle_unknown_session() {
+    init_deps "file"
+    guard_accounts_file
+    local hkey="$1" target_name="${2:-}" new_name
 
-    # Prompt for new name
-    while true; do
-        read -rp "Account name: " name
-        # Validate user input
-        if ! validate_account_name "$name"; then
-            warn "Invalid account name: ${name}. Please try again:"
-        elif account_exists "$name"; then
-            warn "The name ${name} already exists. Please try again:"
-        else
-            break
-        fi
-    done
+    # Path A: Name provided. Check name is allowed.
+    if [[ -n "$target_name" ]] && validate_account_name "$target_name" && ! account_exists "$target_name"; then
+        new_name="$target_name"
+    else
+        [[ -n "$target_name" ]] && warn "Invalid account name: ${target_name}. Please try again."
+        # Path B: No name provided (or validation failed). Prompt for one.
+        while true; do
+            read -rp "Account name: " new_name
+            if ! validate_account_name "$new_name"; then
+                warn "Invalid account name: ${new_name}. Please try again:"
+            elif account_exists "$new_name"; then
+                warn "The name ${new_name} already exists. Please try again:"
+            else
+                break
+            fi
+        done
+    fi
 
-    save_account_files "$name"
-    commit_entry "$name" "$uuid" "true"
-    set_active "$name"
-    success "Created new account: $name"
+    save_account_files "$new_name"
+    commit_entry "$new_name" "$hkey" "true"
+    set_active "$new_name"
+    success "Registered unknown session as '$new_name'."
+    return 0
 }
 
 cmd_new() {
     # Check if we have exactly 1 argument
-    [[ "$#" -eq 1 ]] || die "Usage: ${PROG_NAME} new <name>"
+    [[ "$#" -le 1 ]] || die "Usage: ${PROG_NAME} new [name]"
     init_deps "wine" "file"
     guard_accounts_file
     init_egs_env
     local new_name="$1" old_name hkey existing ans
-    old_name=$(active_account || true)
-    hkey=$(get_hkey_id || true)
+
+    # validate name
+    # [[ -n $new_name ]] && { validate_account_name "$new_name" || { warn "Invalid name ${new_name}. Try again" && new_name="" ; } ; }
+    if [[ -n "$new_name" ]] && ! validate_account_name "$new_name"; then
+        warn "Invalid name: ${new_name}"
+        new_name=""
+    fi
+
+    # No name prompt
+    if [[ -z "$new_name" ]]; then
+        while true; do
+            read -rp "Enter name for new account: " new_name
+            validate_account_name "$new_name" && break
+            warn "Invalid account name. Please try again:"
+        done
+    fi
+
+    old_name=$(active_account)
+    hkey=$(get_hkey_id) || debug "Registry key not found. Assuming virgin launcher"
 
     validate_account_name "$new_name" || die "invalid account name: $new_name"
     account_exists "$new_name" && die "Name already exists"
     kill_egs
 
     if [[ -n "$hkey" ]]; then
-        existing=$(account_by_id "$hkey" || true)
-        [[ -n "$existing" ]] && save_account_files "$existing"
+        existing=$(account_by_id "$hkey")
+        if [[ -n "$existing" ]]; then
+            save_account_files "$existing"
+        else
+            # Ask user what to do with unknown account
+            while true; do
+                read -rp "Unrecognised session detected. Claim as '$new_name'? [y/N] " ans
+                case "$ans" in
+                    y|Y)
+                        info "Creating new account: $new_name"
+                        handle_unknown_session "$hkey" "$new_name" || die "Aborted. Unable to claim account. Try again"
+                        # Terminate here, since the intended goal is complete.
+                        exit 0
+                        ;;
+                    x|X|n|N)
+                        warn "Abandoned existing account"
+                        break
+                        ;;
+                    *)
+                        warn "Unrecognised input: $ans. Please enter Y or N: "
+                        ;;
+                esac
+            done
+        fi
     fi
 
     [[ -n "$old_name" ]] && set_inactive "$old_name"
@@ -533,18 +604,19 @@ cmd_new() {
             y|Y)
                 info "Creating new account: $new_name"
                 cmd_save "$new_name"
-                return
+                # terminate on job done
+                exit 0
                 ;;
             x|X|n|N)
                 info "Aborted. Attempting to restore account: $old_name"
                 kill_egs
                 if [[ -n "$old_name" ]]; then
                     cmd_load "$old_name"
+                    die "Aborted. Restored ${old_name}"
                 else
                     info "No previous account to load. Cleared Epic Games Launcher state"
                     exit 0
                 fi
-                return
                 ;;
             *)
                 warn "Unrecognised input: $ans. Please enter Y or X "
@@ -560,9 +632,11 @@ cmd_save() {
     guard_accounts_file
     init_egs_env
     local name="${1:-}" hkey active_name uuid active
+
     [[ -n "$name" ]] && { validate_account_name "$name" || die "invalid account name: $name" ; }
-    hkey=$(get_hkey_id) || die "No Epic account logged in"
-    active_name=$(account_by_id "$hkey" || true)
+    hkey=$(get_hkey_id) || die "Epic registry key not found. If this is a fresh install, please log in first."
+    [[ -n "$hkey" ]] || die "No Epic account logged in"
+    active_name=$(account_by_id "$hkey")
 
     # No name entered. check active account
     if [[ -z "$name" ]]; then
@@ -571,20 +645,26 @@ cmd_save() {
             info "Found existing $active_name"
             name="$active_name"
         else
-            info "No existing account found. Starting wizard..."
-            prompt_create_unknown "$hkey"
-            return
+            info "Unknown account found. Starting wizard..."
+            cmd_new
+            return # not really needed since this is a handover
         fi
     fi
 
-    # Find account name
+    # Name entered. Find account name
     if account_exists "$name"; then
         info "Found account. Resolving..."
         uuid=$(account_by_name "$name")
+        # Ensure IDs match
         [[ "$uuid" = "$hkey" ]] || die "Account $name exists with different ID"
     else
         info "Account $name not found."
+        # Name not found. Check ID
         [[ -z "$active_name" ]] || die "Account already saved under name '$active_name'"
+        # name and ID are unique, handover to cmd_new
+        info "Unknown account found. Starting wizard..."
+        cmd_new "$name"
+        return # not really needed since this is a handover
     fi
 
     # Commit
@@ -601,23 +681,39 @@ cmd_load() {
     init_deps "wine" "file"
     guard_accounts_file
     init_egs_env
-    local name="$1" uuid hkey active_name
+    local name="$1" uuid hkey active_name ans
 
     validate_account_name "$name" || die "invalid account name: $name"
     account_exists "$name" || die "Account not found"
     uuid=$(account_by_name "$name")
-    hkey=$(get_hkey_id || true)
-
+    hkey=$(get_hkey_id) || die "Epic registry key not found. If this is a fresh install, please log in first."
     kill_egs
 
     # Check for active account
     if [[ -n "$hkey" ]]; then
-        active_name=$(account_by_id "$hkey" || true)
+        active_name=$(account_by_id "$hkey")
         #check if account is in list
         if account_exists "$active_name"; then
             save_account_files "$active_name"
         else
-            prompt_create_unknown "$hkey" || warn "Abandoning unknown account"
+            # Ask user what to do with unknown account
+            while true; do
+                read -rp "Unrecognised session detected. Save before proceeding? [y/N] " ans
+                case "$ans" in
+                    y|Y)
+                        info "Starting wizard..."
+                        handle_unknown_session "$hkey" || die "Aborted. Unable to claim account. Try again"
+                        break
+                        ;;
+                    x|X|n|N)
+                        warn "Abandoned existing account"
+                        break
+                        ;;
+                    *)
+                        warn "Unrecognised input: $ans. Please enter Y or N: "
+                        ;;
+                esac
+            done
         fi
     fi
 
