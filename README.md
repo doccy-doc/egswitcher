@@ -1,4 +1,4 @@
-# EGSwitcher
+<img width="424" height="598" alt="image" src="https://github.com/user-attachments/assets/bf68901f-7cce-4c2c-a9da-6ae9c844c3c9" /><img width="424" height="598" alt="image" src="https://github.com/user-attachments/assets/55ee45d8-0a60-445d-8a2d-415896279299" /># EGSwitcher
 
 A lightweight, defensive Bash utility for managing multiple Epic Games Launcher accounts on Linux/Wine. Swap accounts instantly without losing your login session or launcher settings.
 
@@ -11,8 +11,8 @@ A lightweight, defensive Bash utility for managing multiple Epic Games Launcher 
 * **Context-Aware Session Detection:** Intuitively detects if you are logged into an unrecognised account. It offers to securely "claim" the current session to avoid data loss.
 * **Defensive Architecture:** Defensively written, strictly validated, and battle-tested for edge cases. Extremely safe for newcomers.
 * **Atomic State Management:** Uses isolated temporary files to ensure account switching is atomic. If a process is killed halfway through, changes are abandoned.
-* **WINE Native Integration:** Uses `taskkill` and `wineserver -k` for session-safe termination.
-* **Smart Directory Detection:** Uses WINE registry to accurately find the WINE user and AppData paths, with heuristic directory scanning as a fallback for unconventional setups.
+* **WINE Native Integration:** Uses the WINE API for session-safe termination.
+* **Smart Directory Detection:** Uses WINE registry to accurately find the prefix's correct paths, with heuristic directory scanning as a fallback for unconventional setups.
 * **Interactive Configuration Wizard:** Users can choose to edit a config file, or use the Interactive CLI prompts to modify their configuration.
 * **Strict XDG Compliance:** Properly utilises XDG Base Directory specs for file management. This makes it easy to integrate into existing backup workflows.
 
@@ -25,13 +25,15 @@ To prevent this, you should periodically cycle through all your swapped accounts
 
 ## 🛠️ Installation
 
-1. **Make Executable:**
+1. **Download** the [latest release](https://github.com/doccy-doc/egswitcher/releases/)
+
+2. **Make Executable:**
    chmod +x ./egs
 
-2. **Add to Path (Optional):**
+3. **Add to Path (Optional):**
    mv ./egs ~/.local/bin/
 
-3. **Configure Prefix:**
+4. **Configure Prefix:**
    egs config pfx
 - and enter the full path to your Epic Games Launcher WINE/Proton prefix
 
