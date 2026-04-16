@@ -25,7 +25,7 @@ To prevent this, you should periodically cycle through all your swapped accounts
 
 ## 🛠️ Installation
 
-1. **Download** the [latest release](https://github.com/doccy-doc/egswitcher/releases/)
+1. **Download** the [latest release](https://github.com/doccy-doc/egswitcher/releases/latest)
 
 2. **Make Executable:**
    chmod +x ./egs
