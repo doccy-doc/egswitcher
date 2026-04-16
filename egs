@@ -100,7 +100,7 @@ die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
 info() { printf 'INFO: %s\n' "$*" >&2; }
 success() { printf 'SUCCESS: %s\n' "$*" >&2; }
-debug() { [[ "$EGS_DEBUG" = "1" ]] && printf 'DEBUG: ' >&2 && printf '%q ' "$@" >&2 && printf '\n' >&2 || true; }
+debug() { [[ "$EGS_DEBUG" = "1" ]] && printf 'DEBUG: ' >&2 && printf '%s ' "$@" >&2 && printf '\n' >&2 || true; }
 
 # =========================
 # BOOTSTRAP
@@ -414,7 +414,7 @@ kill_egs() {
     for ((i= 1; i<=tries; i++)); do
         sleep "$delay"
         printf "." >&2
-        ! is_egs_running && success "Epic Games Closed" && return 0
+        ! is_egs_running && printf "\n" >&2 && success "Epic Games Closed" && return 0
     done
 
     # If we get here, it failed to shut down
@@ -522,9 +522,9 @@ handle_unknown_session() {
         while true; do
             read -rp "Account name: " new_name
             if ! validate_account_name "$new_name"; then
-                warn "Invalid account name: ${new_name}. Please try again:"
+                warn "Invalid account name: ${new_name}. Please try again: "
             elif account_exists "$new_name"; then
-                warn "The name ${new_name} already exists. Please try again:"
+                warn "The name ${new_name} already exists. Please try again: "
             else
                 break
             fi
@@ -544,7 +544,7 @@ cmd_new() {
     init_deps "wine" "file"
     guard_accounts_file
     init_egs_env
-    local new_name="$1" old_name hkey existing ans
+    local new_name="${1:-}" old_name hkey existing ans
 
     # validate name
     # [[ -n $new_name ]] && { validate_account_name "$new_name" || { warn "Invalid name ${new_name}. Try again" && new_name="" ; } ; }
@@ -563,7 +563,7 @@ cmd_new() {
     fi
 
     old_name=$(active_account)
-    hkey=$(get_hkey_id) || debug "Registry key not found. Assuming virgin launcher"
+    hkey=$(get_hkey_id) || warn "Registry key not found. Assuming virgin launcher"
 
     validate_account_name "$new_name" || die "invalid account name: $new_name"
     account_exists "$new_name" && die "Name already exists"
@@ -602,13 +602,20 @@ cmd_new() {
 
     success "Launcher cleared. Please login to Epic Games Launcher now"
     while true; do
-        read -rp "Done? [y = save / x = abort] " ans
+        read -rp "Done? [y/X] " ans
         case "$ans" in
             y|Y)
                 info "Creating new account: $new_name"
-                cmd_save "$new_name"
+                # cmd_save "$new_name" # removed due to recursion loop with cmd_save
+                hkey=$(get_hkey_id) || die "Epic registry key not found. If this is a fresh install, please log in first"
+                [[ -n "$hkey" ]] || die "Epic registry value is empty. Did you log in?"
+                save_account_files "$new_name"
+                [[ -n "$old_name" ]] && [[ "$old_name" != "$new_name" ]] && set_inactive "$old_name"
+                commit_entry "$new_name" "$hkey" "true"
+                set_active "$new_name"
+                success "Registered unknown session as '$new_name'."
                 # terminate on job done
-                exit 0
+                exit
                 ;;
             x|X|n|N)
                 info "Aborted. Attempting to restore account: $old_name"
@@ -617,12 +624,11 @@ cmd_new() {
                     cmd_load "$old_name"
                     die "Aborted. Restored ${old_name}"
                 else
-                    info "No previous account to load. Cleared Epic Games Launcher state"
-                    exit 0
+                    die "No previous account to load. Cleared Epic Games Launcher state"
                 fi
                 ;;
             *)
-                warn "Unrecognised input: $ans. Please enter Y or X "
+                warn "Unrecognised input: $ans. Please enter Y [done] or X [abort]: "
                 ;;
         esac
     done
@@ -637,7 +643,7 @@ cmd_save() {
     local name="${1:-}" hkey active_name uuid active
 
     [[ -n "$name" ]] && { validate_account_name "$name" || die "invalid account name: $name" ; }
-    hkey=$(get_hkey_id) || die "Epic registry key not found. If this is a fresh install, please log in first."
+    hkey=$(get_hkey_id) || die "Epic registry key not found. If this is a fresh install, please log in first"
     [[ -n "$hkey" ]] || die "No Epic account logged in"
     active_name=$(account_by_id "$hkey")
 
@@ -689,7 +695,7 @@ cmd_load() {
     validate_account_name "$name" || die "invalid account name: $name"
     account_exists "$name" || die "Account not found"
     uuid=$(account_by_name "$name")
-    hkey=$(get_hkey_id) || die "Epic registry key not found. If this is a fresh install, please log in first."
+    hkey=$(get_hkey_id) || die "Epic registry key not found. If this is a fresh install, please log in first"
     kill_egs
 
     # Check for active account
@@ -724,7 +730,50 @@ cmd_load() {
     set_hkey_id "$uuid"
     load_account_files "$name"
     set_active "$name"
-    success "Loaded account: '$name'. You can now launch your game."
+    success "Loaded account: '$name'. You can now launch your game"
+}
+
+cmd_unload() {
+    init_deps "wine" "file"
+    guard_accounts_file
+    init_egs_env
+    local name hkey existing ans
+
+    name=$(active_account)
+    hkey=$(get_hkey_id) || die "Epic registry key not found. Nothing to do"
+    [[ -n "$hkey" ]] || die "No Epic account logged in. Nothing to do"
+
+    # Save current if known
+    existing=$(account_by_id "$hkey")
+    if [[ -n "$existing" ]]; then
+        save_account_files "$existing"
+    else
+        # Ask user what to do with unknown account
+        while true; do
+            read -rp "Unrecognised session detected. Save before proceeding? [y/N] " ans
+            case "$ans" in
+                y|Y)
+                    info "Starting wizard..."
+                    handle_unknown_session "$hkey" || die "Aborted. Unable to claim account. Try again"
+                    break
+                    ;;
+                x|X|n|N)
+                    warn "Abandoned existing account"
+                    break
+                    ;;
+                *)
+                    warn "Unrecognised input: $ans. Please enter Y or N: "
+                    ;;
+            esac
+        done
+    fi
+
+    # Wipe state
+    # shellcheck disable=SC2015
+    [[ -n "$name" ]] && { rm -f "${EGS_CONFIG_FILE}" && set_inactive "$name" || die "Could not unset account" ; }
+    [[ -n "$hkey" ]] && set_hkey_id
+
+    success "Launcher state cleared. No active account"
 }
 
 cmd_delete() {
@@ -735,9 +784,6 @@ cmd_delete() {
 
     validate_account_name "$name" || die "invalid account name: $name"
     account_exists "$name" || die "Account not found"
-
-    # Check against active
-    [[ "$(active_account || true)" != "$name" ]] || die "Cannot delete active account"
 
     # Delete
     delete_entry "$name"
@@ -856,7 +902,10 @@ Commands:
   load <name>           Load an existing account by name
                         Example: $PROG_NAME load MyAccount
 
-  delete <name>         Delete an existing account (cannot delete the active account)
+  unload                Clear the launucher of any logged in user
+                        Example: $PROG_NAME unload
+
+  delete <name>         Delete an existing account
                         Example: $PROG_NAME delete MyAccount
 
   rename <old> <new>    Rename an account from <old> to <new>
@@ -896,9 +945,10 @@ case "$CMD" in
     new)    cmd_new "$@" ;;
     save)   cmd_save "$@" ;;
     load)   cmd_load "$@" ;;
+    unload) cmd_unload "$@" ;;
     delete) cmd_delete "$@" ;;
     rename) cmd_rename "$@" ;;
-    config)   cmd_config "$@" ;;
+    config) cmd_config "$@" ;;
     list)   cmd_list ;;
     -v|--version)
         echo "$VERSION"

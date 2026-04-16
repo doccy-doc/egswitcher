@@ -56,6 +56,10 @@ To prevent this, you should periodically cycle through all your swapped accounts
 - If an unrecognised session is active, it will prompt you to claim it.
 2. Launch the game
 
+### Clear the Launcher
+    egs unload
+- If an unrecognised session is active, it will prompt you to claim it.
+
 ### List Saved Accounts
     egs list
 
@@ -70,12 +74,16 @@ To prevent this, you should periodically cycle through all your swapped accounts
 ### Change the Active Prefix
     egs config pfx [/path/to/prefix]
 For persistent change:
-- Run: `egs config pfx` and follow the prompt
-- Or run: `egs config pfx "/home/username/.wine/"`
-- Or edit: `~/.config/egswitcher/egswitcher.conf`: `EGS_PFX='/home/username/.wine/'`
+- Run: `egs config pfx` and follow the prompt 
+  - Note: Must be an absolute path (e.g. `/home/username/.wine`). Cannot use `~/` or envars (e.g. `$HOME`).
+- Or run: `egs config pfx "$HOME/.wine/"`
+  - Note: Can use envars in path (e.g. `$HOME/.wine` or `$WINEPREFIX`). Cannot use `~/`.
+- Or edit: `~/.config/egswitcher/egswitcher.conf`: `EGS_PFX='/home/username/.wine/'` 
+  - Note: Must be an absolute path (e.g. `/home/username/.wine`). Cannot use `~/` or envars (e.g. `$HOME`).
 
 To change for a single run:
 - Run: `EGSPFX="/path/to/prefix" egs [command]`
+  - Note: Can use envars in path (e.g. `$HOME/.wine` or `$WINEPREFIX`). Cannot use `~/`.
 
 ### Show Debug Messages
 To enable for a single run:
