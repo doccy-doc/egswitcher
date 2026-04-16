@@ -1,4 +1,4 @@
-<img width="424" height="598" alt="image" src="https://github.com/user-attachments/assets/bf68901f-7cce-4c2c-a9da-6ae9c844c3c9" /><img width="424" height="598" alt="image" src="https://github.com/user-attachments/assets/55ee45d8-0a60-445d-8a2d-415896279299" /># EGSwitcher
+# EGSwitcher
 
 A lightweight, defensive Bash utility for managing multiple Epic Games Launcher accounts on Linux/Wine. Swap accounts instantly without losing your login session or launcher settings.
 
