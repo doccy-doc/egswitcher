@@ -20,10 +20,10 @@ A clear and concise description of what you expected to happen.
 
 **Observed behaviour**
 If applicable, add CLI output or screenshots to help explain your problem.
- - use `EGS_DEBUG=1 epic-switcher [command]` to get debug log in CLI
+ - use `EGSDEBUG=1 egs [command]` to get debug log in CLI
 
 **Desktop (please complete the following information):**
- - epic-switcher Version: [e.g. 0.1.0] (use `epic-switcher --version`)
+ - EGSwitcher Version: [e.g. 1.0.0] (use `egs --version`)
  - OS: [e.g. Ubuntu 24.04]
  - Runner: [e.g. GE-Proton-10-30]
  - Launcher: [e.g. Lutris]
