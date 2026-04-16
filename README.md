@@ -88,6 +88,7 @@ To change for a single run:
   - Note: Can use envars in path (e.g. `$HOME/.wine` or `$WINEPREFIX`). Cannot use `~/`.
 
 ### Show Debug Messages
+    egs config debug [1|0]
 To enable for a single run:
 - Run: `EGSDEBUG=1 egs [command]`
 
