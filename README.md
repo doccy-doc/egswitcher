@@ -91,15 +91,15 @@ To change for a single run:
 To enable for a single run:
 - Run: `EGSDEBUG=1 egs [command]`
 
+To enable persistent debugging:
+- Run: `egs config debug 1`
+- Or edit `~/.config/egswitcher/egswitcher.conf`: `EGS_DEBUG=1`
+
 ### See a List of Commands
     egs -h|--help
 - Run: `egs`
 - Or run: `egs -h`
 - Or run: `egs --help`
-
-To enable persistent debugging:
-- Run: `egs config debug 1`
-- Or edit `~/.config/egswitcher/egswitcher.conf`: `EGS_DEBUG=1`
 
 ## 📁 File Schema
 EGSwitcher follows the **XDG Base Directory Specification**. All files and directories are created automatically as required. If you wish to backup or inspect your data, they are located here:
