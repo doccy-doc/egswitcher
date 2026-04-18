@@ -32,8 +32,8 @@ To prevent this, you should periodically cycle through all your swapped accounts
 2. **Make Executable:**
    chmod +x ./egs
 
-3. **Add to Path (Optional):**
-   mv ./egs ~/.local/bin/
+3. **Add to PATH (Optional):**
+   mkdir -p ~/.local/bin && mv ./egs ~/.local/bin/
 
 4. **Configure Prefix:**
    egs config pfx
