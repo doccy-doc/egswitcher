@@ -30,13 +30,13 @@ To prevent this, you should periodically cycle through all your swapped accounts
 1. **Download** the [latest release](https://github.com/doccy-doc/egswitcher/releases/latest)
 
 2. **Make Executable:**
-   chmod +x ./egs
+    `chmod +x ./egs`
 
-3. **Add to PATH (Optional):**
-   mkdir -p ~/.local/bin && mv ./egs ~/.local/bin/
+5. **Add to PATH (Optional):**
+    `mkdir -p ~/.local/bin && mv ./egs ~/.local/bin/`
 
-4. **Configure Prefix:**
-   egs config pfx
+6. **Configure Prefix:**
+    `egs config pfx`
 - and enter the full path to your Epic Games Launcher WINE/Proton prefix
 
 ## 📖 Usage
