@@ -2,7 +2,7 @@
 
 A lightweight, defensive Bash utility for managing multiple Epic Games Launcher accounts on Linux/Wine. Swap accounts instantly without losing your login session or launcher settings.
 
-<img width="681" height="380" alt="CLI" src="https://github.com/user-attachments/assets/1cf0b2b8-04b3-484a-a23d-df65ad263c03" />
+<img width="681" height="380" alt="egs1" src="https://github.com/user-attachments/assets/0d00b716-ac85-466b-bf52-01269262e137" />
 
 ## 🔒 Privacy & Security
 
